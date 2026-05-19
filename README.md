@@ -54,7 +54,7 @@ NyayaVanni/
    ```
 4. Configure environment variables:
    - Copy `.env.example` to `.env`
-   - Add your `GOOGLE_API_KEY` and other necessary configurations.
+   - Add your `GEMINI_API_KEY` and other necessary configurations.
 5. Run the server:
    ```bash
    uvicorn main:app --reload
