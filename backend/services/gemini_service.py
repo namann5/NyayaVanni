@@ -2,6 +2,7 @@ import google.generativeai as genai
 import os
 import json
 import logging
+import re
 # Import the custom Legal Query Optimizer
 from services.legal_processor import LegalQueryOptimizer
 
@@ -78,7 +79,6 @@ def analyze_document_with_gemini(document_text: str, retrieved_laws: list, langu
         response = model.generate_content(prompt)
         text = response.text
         # Clean potential markdown markdown wrapping if Gemini messes up
-        import re
         match = re.search(r'```(?:json)?\n(.*?)\n```', text, re.DOTALL)
         if match:
             text = match.group(1)
@@ -94,7 +94,11 @@ def analyze_document_with_gemini(document_text: str, retrieved_laws: list, langu
         logger.error(f"Gemini Analysis Failed: {e}")
         raise e
 
+
 def generate_chat_response(document_analysis: dict, chat_history: list, user_message: str, language: str = "en") -> str:
+    """
+    Generate a conversational response using the Gemini chat model.
+    """
     # Use the LegalQueryOptimizer here to preprocess and expand conversational query shortforms
     optimized_message = query_optimizer.optimize_prompt(user_message)
     
@@ -121,18 +125,18 @@ def generate_chat_response(document_analysis: dict, chat_history: list, user_mes
 
     Provide a helpful, accurate answer in simple, jargon-free language.
     If legal consultation is needed, recommend it clearly.
-    
+
     STRICT FORMATTING RULES:
     1. Organize your answer clearly using bullet points (use * or -).
     2. Use **bold** for key terms or section names.
     3. Break down complex sentences into short, easy-to-read points.
     4. Each point should be on a new line.
-    
+
     Example Structure:
     * **Observation:** [Brief point]
     * **Next Step:** [Actionable advice]
     * **Note:** [Relevant legal mention]
-    
+
     {lang_instruction}
     """
     try:
