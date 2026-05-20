@@ -80,15 +80,50 @@ async def analyze_document(document_id: str, language: str = "en", file: UploadF
             "extracted_text": text[:500] + "...",
             "cached": False
         }
+    except HTTPException as http_err:
+        raise http_err
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Requested document file not found on storage.")
     except Exception as e:
         import traceback
+        from google.api_core.exceptions import ResourceExhausted, InvalidArgument, GoogleAPIError
+        
         trace = traceback.format_exc()
         logger.error(f"Analysis failed: {e}\n{trace}")
         
-        detail_msg = str(e)
-        if "429" in str(e) or "Quota exceeded" in str(e):
-            raise HTTPException(status_code=429, detail="AI Quota limit reached. Please wait a minute and try again.")
+        # 1. Handle Gemini API Specific exceptions
+        if isinstance(e, ResourceExhausted):
+            raise HTTPException(
+                status_code=429, 
+                detail="AI Quota limit reached. Please wait a minute and try again."
+            )
+        elif isinstance(e, InvalidArgument):
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid input structure. The document may be too long for the model."
+            )
+        elif isinstance(e, GoogleAPIError):
+            raise HTTPException(
+                status_code=502, 
+                detail="Upstream AI Service error. Please try again in a few moments."
+            )
             
+        # 2. Handle configuration error explicitly
+        if not os.getenv("GEMINI_API_KEY"):
+            raise HTTPException(
+                status_code=500, 
+                detail="Server configuration issue: GEMINI_API_KEY environment variable is missing."
+            )
+            
+        # 3. Handle third-party library errors specifically (e.g. PyMuPDF/fitz corrupted files)
+        if "fitz" in str(e.__class__) or "FileDataError" in type(e).__name__:
+            raise HTTPException(
+                status_code=400, 
+                detail="The uploaded document is corrupted or could not be parsed."
+            )
+
         raise HTTPException(status_code=500, detail="An internal processing error occurred.")
 
 
