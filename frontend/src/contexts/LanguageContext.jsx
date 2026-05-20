@@ -2,15 +2,36 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 
 const LanguageContext = createContext();
 
+// Define supported languages to enable validation
+const SUPPORTED_LANGUAGES = ['en', 'hi'];
+const DEFAULT_LANGUAGE = 'en';
+
+// Validate and sanitize language value
+const isValidLanguage = (lang) => SUPPORTED_LANGUAGES.includes(lang);
+
+const getSafeLanguage = (storedValue) => {
+  // Fallback to default if invalid or missing
+  return isValidLanguage(storedValue) ? storedValue : DEFAULT_LANGUAGE;
+};
+
 export const useLanguage = () => useContext(LanguageContext);
 
 export const LanguageProvider = ({ children }) => {
   const [language, setLanguage] = useState(() => {
-    return localStorage.getItem('nyaya_language') || 'en';
+    // Validate stored language value before using
+    const stored = localStorage.getItem('nyaya_language');
+    const safe = getSafeLanguage(stored);
+    // Clean up localStorage if it contained invalid value
+    if (stored !== safe) {
+      localStorage.setItem('nyaya_language', safe);
+    }
+    return safe;
   });
 
   useEffect(() => {
-    localStorage.setItem('nyaya_language', language);
+    // Always validate before persisting to localStorage
+    const validLang = getSafeLanguage(language);
+    localStorage.setItem('nyaya_language', validLang);
   }, [language]);
 
   const toggleLanguage = () => {
@@ -92,7 +113,9 @@ export const LanguageProvider = ({ children }) => {
   };
 
   const t = (key) => {
-    return translations[language][key] || translations['en'][key] || key;
+    // Defensive: ensure language is valid before accessing translations
+    const safeLang = getSafeLanguage(language);
+    return translations[safeLang]?.[key] || translations[DEFAULT_LANGUAGE]?.[key] || key;
   };
 
   return (
