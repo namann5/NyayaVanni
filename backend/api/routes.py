@@ -1,13 +1,9 @@
 import os
-import io
 import uuid
 import json
 import logging
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
 
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Request
-from fastapi.responses import StreamingResponse
 
 from services.knowledge_graph_service import LegalKnowledgeGraphBuilder
 from services.storage_service import (
@@ -22,8 +18,8 @@ from services.storage_service import (
 )
 from services.ocr_service import extract_document
 from services.rag_service import retrieve_relevant_laws
-from services.gemini_service import analyze_document_with_gemini, generate_chat_response, stream_chat_response
-from models.schemas import ChatRequest, ChatResponse, DocumentGenerationRequest
+from services.gemini_service import analyze_document_with_gemini, generate_chat_response
+from models.schemas import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
 
@@ -111,64 +107,52 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @api_router.post("/analyze/{document_id}")
-async def analyze_document(
-    document_id: str,
-    language: str = "en",
-    file: UploadFile = File(None)
-):
-    """
-    Trigger full analysis pipeline.
-    """
-
+async def analyze_document(request: Request, document_id: str, language: str = "en", force_ocr: bool = False, file: UploadFile = File(None)):
+    """Trigger full analysis pipeline."""
     try:
-        # ── Cache-first ─────────────────────────────────────────────────────
-        cached = get_cached_analysis(document_id, language)
+        session_id = require_session_id(request)
+        record = require_document_owner(document_id, session_id)
+        
+        # ── Cache-first ──────────────────────────────────────────────────────────
+        if not force_ocr:
+            cached = get_cached_analysis(document_id, language)
+            if cached:
+                logger.info(f"Cache HIT for document {document_id} [{language}]")
+                knowledge_graph = graph_builder.generate_graph(cached["extracted_text"])
+                
+                return {
+                    "documentId": document_id,
+                    "analysis": cached["analysis"],
+                    "knowledge_graph": knowledge_graph,
+                    "extracted_text": cached["extracted_text"][:500] + "...",
+                    "cached": True
+                }
 
-        if cached:
-            logger.info(f"Cache HIT for document {document_id} [{language}]")
-
-            knowledge_graph = graph_builder.generate_graph(
-                cached["extracted_text"]
-            )
-
-            return {
-                "documentId": document_id,
-                "analysis": cached["analysis"],
-                "knowledge_graph": knowledge_graph,
-                "extracted_text": cached["extracted_text"][:500] + "...",
-                "cached": True
-            }
-
-        # ── Cache MISS: run full pipeline ──────────────────────────────────
-
+        # ── Cache MISS: run the full pipeline ────────────────────────────────────
         if not file:
             record = get_document_record(document_id)
-
             if not record or not record.get("local_path"):
                 raise HTTPException(
                     status_code=404,
                     detail="Document not found or file missing"
                 )
-
             try:
                 with open(record["local_path"], "rb") as f:
                     contents = f.read()
-
             except IOError:
                 raise HTTPException(
                     status_code=500,
                     detail="Failed to read document from storage"
                 )
-
             filename = record["filename"]
-
         else:
             contents = await file.read()
             filename = file.filename
 
         # 1. OCR Extraction
-        text = extract_document(contents, filename)
+        text = extract_document(contents, filename, force_ocr=force_ocr)
 
         # 2. RAG Retrieval
         relevant_laws = retrieve_relevant_laws(text, k=3)
@@ -201,19 +185,10 @@ async def analyze_document(
 
     except HTTPException as http_err:
         raise http_err
-
     except ValueError as val_err:
-        raise HTTPException(
-            status_code=400,
-            detail=str(val_err)
-        )
-
+        raise HTTPException(status_code=400, detail=str(val_err))
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail="Requested document file not found on storage."
-        )
-
+        raise HTTPException(status_code=404, detail="Requested document file not found on storage.")
     except Exception as e:
         import traceback
         from google.api_core.exceptions import (
@@ -225,61 +200,29 @@ async def analyze_document(
         trace = traceback.format_exc()
         logger.error(f"Analysis failed: {e}\n{trace}")
 
-        # Gemini quota
         if isinstance(e, ResourceExhausted):
-            raise HTTPException(
-                status_code=429,
-                detail="AI Quota limit reached. Please wait a minute and try again."
-            )
-
-        # Invalid request
+            raise HTTPException(status_code=429, detail="AI Quota limit reached. Please wait a minute and try again.")
         elif isinstance(e, InvalidArgument):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid input structure. The document may be too long for the model."
-            )
-
-        # Gemini upstream issue
+            raise HTTPException(status_code=400, detail="Invalid input structure. The document may be too long for the model.")
         elif isinstance(e, GoogleAPIError):
-            raise HTTPException(
-                status_code=502,
-                detail="Upstream AI Service error. Please try again in a few moments."
-            )
-
-        # Missing env key
+            raise HTTPException(status_code=502, detail="Upstream AI Service error. Please try again in a few moments.")
+        
         if not os.getenv("GEMINI_API_KEY"):
-            raise HTTPException(
-                status_code=500,
-                detail="Server configuration issue: GEMINI_API_KEY environment variable is missing."
-            )
+            raise HTTPException(status_code=500, detail="Server configuration issue: GEMINI_API_KEY environment variable is missing.")
 
-        # Corrupt document
         if "fitz" in str(e.__class__) or "FileDataError" in type(e).__name__:
-            raise HTTPException(
-                status_code=400,
-                detail="The uploaded document is corrupted or could not be parsed."
-            )
-
-        raise HTTPException(
-            status_code=500,
-            detail="An internal processing error occurred."
-        )
+            raise HTTPException(status_code=400, detail="The uploaded document is corrupted or could not be parsed.")
 
 
 @api_router.post("/chat/general")
 async def chat_general(request: ChatRequest):
     """General legal chat — no document context."""
     try:
-        # Validate user message is not empty
         if not request.user_message or not request.user_message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-        analysis = {}
-
-        history = [
-            {"role": msg.role, "message": msg.message}
-            for msg in request.chat_history
-        ]
+        analysis = request.document_analysis or {}
+        history = [{"role": msg.role, "message": msg.message} for msg in request.chat_history]
 
         generator = stream_chat_response(
             analysis,
@@ -288,7 +231,7 @@ async def chat_general(request: ChatRequest):
             request.language
         )
 
-        return StreamingResponse(generator, media_type="text/plain")
+        return ChatResponse(response=text)
     except Exception as e:
         logger.error(f"General chat failed: {e}")
         raise HTTPException(status_code=500, detail="Chat generation failed")
@@ -306,7 +249,6 @@ async def chat_with_document(document_id: str, chat_request: ChatRequest, http_r
         return StreamingResponse(generator, media_type="text/plain")
     except Exception as e:
         logger.error(f"Chat failed for document {document_id}: {e}")
-        raise HTTPException(status_code=500, detail="Chat generation failed")
         raise HTTPException(status_code=500, detail="Chat generation failed")
 
 @api_router.post("/generate-document")
@@ -386,4 +328,3 @@ async def delete_document(document_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Document not found")
 
     return {"documentId": document_id, "deleted": True}
-

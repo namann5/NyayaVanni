@@ -7,16 +7,37 @@ import os
 # Tesseract needs to be installed on the system (e.g. windows exe or apt-get install tesseract-ocr)
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """Extract text from a digital PDF using PyMuPDF"""
+def extract_text_from_pdf(pdf_bytes: bytes, force_ocr: bool = False) -> str:
+    """Extract text from a digital PDF using PyMuPDF, with fallback to OCR if scanned or forced"""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    
+    # 1. Direct forced OCR extraction
+    if force_ocr:
+        try:
+            return extract_text_with_ocr_from_pdf(pdf_bytes)
+        except Exception as e:
+            import logging
+            logging.error(f"Forced OCR extraction failed: {e}")
+            if getattr(e, "__class__", None) and "TesseractNotFoundError" in e.__class__.__name__:
+                return "[Error: OCR software is not installed. System cannot perform forced OCR.]"
+            raise
+            
     text = ""
     for page in doc:
         text += page.get_text()
     
-    # If the PDF is scanned (image-based), PyMuPDF won't extract the text directly
-    # We fallback to OCR if length is suspiciously short
-    if len(text.strip()) < 50:
+    # 2. Heuristic: check character density per page to identify scanned documents
+    page_count = len(doc)
+    is_scanned = False
+    if page_count > 0:
+        char_density = len(text.strip()) / page_count
+        # If the average page has less than 150 characters, it is highly likely scanned
+        is_scanned = char_density < 150
+    else:
+        is_scanned = True
+        
+    # If the PDF is scanned, run OCR fallback
+    if is_scanned:
         try:
             return extract_text_with_ocr_from_pdf(pdf_bytes)
         except Exception as e:
@@ -52,12 +73,12 @@ def extract_text_from_image(image_bytes: bytes) -> str:
             raise ValueError("The uploaded image is corrupted or in an unsupported format.")
         raise
 
-def extract_document(file_bytes: bytes, filename: str) -> str:
+def extract_document(file_bytes: bytes, filename: str, force_ocr: bool = False) -> str:
     """Main router for text extraction based on file extension"""
     ext = filename.lower().split('.')[-1]
     
     if ext == 'pdf':
-        return extract_text_from_pdf(file_bytes)
+        return extract_text_from_pdf(file_bytes, force_ocr=force_ocr)
     elif ext in ['jpg', 'jpeg', 'png', 'tiff', 'bmp']:
         return extract_text_from_image(file_bytes)
     else:
