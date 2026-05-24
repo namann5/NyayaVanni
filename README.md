@@ -204,24 +204,28 @@ Extracts:
 ```text
 NyayaVanni/
 │
+├── .github/
+│
 ├── backend/
 │   ├── api/
-│   ├── services/
-│   ├── models/
-│   ├── uploads/
 │   ├── data/
-│   ├── main.py
-│   └── requirements.txt
+│   ├── models/
+│   ├── services/
+│   └── uploads/
 │
 ├── frontend/
 │   ├── public/
-│   │   └── screenshots/
-│   ├── src/
-│   └── package.json
+│   └── src/
 │
 ├── designs/
-├── README.md
-└── LICENSE
+├── screenshots/
+├── tests/
+│
+├── CODE_OF_CONDUCT.md
+├── CONTRIBUTING.md
+├── LICENSE
+├── main.py
+└── README.md
 ```
 
 ---
